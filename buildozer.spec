@@ -29,6 +29,8 @@ android.api = 35
 android.minapi = 26
 android.ndk_api = 26
 
+# NDK VERSION
+android.ndk = 27c
 android.build_tools_version = 35.0.0
 
 android.archs = arm64-v8a
