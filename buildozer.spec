@@ -1,50 +1,111 @@
+name: Build Android (Debug / Release)
 
-[app]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
 
-title = LightCap
+jobs:
+  build:
+    runs-on: ubuntu-22.04
 
-package.name = lightcal
-package.domain = com.qroadscan
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
 
-source.dir = .
-source.main = main.py
+    steps:
+      - uses: actions/checkout@v4
 
-version = 0.1.5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-android.version_code = 1024005
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-requirements = python3,kivy==2.2.1,kivymd,httpx,cryptography,aiosqlite,litert-lm
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git zip unzip curl \
+            libssl-dev libffi-dev libsqlite3-dev \
+            libbz2-dev zlib1g-dev libncurses5-dev \
+            libgdbm-dev libnss3-dev libreadline-dev \
+            liblzma-dev libjpeg-dev libfreetype6-dev
 
+      - name: Install Android SDK (cmdline-tools)
+        run: |
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT/cmdline-tools"
 
-orientation = portrait
-fullscreen = 0
+          curl -fsSL -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q tools.zip
+          rm tools.zip
 
-include_patterns = models/*,*.gguf,*.aes,*.db,*.json
+          mv cmdline-tools latest
 
-android.permissions = INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,CAMERA,RECORD_AUDIO,FOREGROUND_SERVICE,WAKE_LOCK
+          mkdir -p "$ANDROID_SDK_ROOT/platform-tools"
 
-android.sdk_path = /usr/local/lib/android/sdk
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-android.api = 35
-android.minapi = 26
-android.ndk_api = 26
+      # ✅ FIX: Buildozer expects legacy sdkmanager path
+      - name: Fix sdkmanager path for Buildozer
+        run: |
+          mkdir -p /usr/local/lib/android/sdk/tools/bin
+          ln -sf /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager \
+            /usr/local/lib/android/sdk/tools/bin/sdkmanager
 
-# NDK VERSION
-android.ndk = 27c
-android.build_tools_version = 35.0.0
+      - name: Install Android packages
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager --update
 
-android.archs = arm64-v8a
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
-p4a.bootstrap = sdl2
+      - name: Install Buildozer & Python deps
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install "Cython<3.0"
+          pip install buildozer
 
-android.logcat_filters = Python:V,ActivityManager:I,WindowManager:I
+          # kept litert-lm exactly as requested
+          pip install kivy==2.2.1 kivymd httpx cryptography aiosqlite litert-lm
 
-android.allow_backup = False
+      - name: Restore signing keystore
+        if: github.event_name != 'pull_request'
+        run: |
+          umask 077
+          echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > qrs-upload.jks
+          chmod 600 qrs-upload.jks
 
+      - name: Build signed RELEASE (AAB)
+        if: github.event_name != 'pull_request'
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/qrs-upload.jks
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          buildozer -v android release
+          ls -lah bin
 
-[buildozer]
+      - name: Build debug APK
+        if: github.event_name == 'pull_request'
+        run: |
+          buildozer android debug
+          ls -lah bin
 
-log_level = 2
-warn_on_root = 1
-build_dir = .buildozer
-android.accept_sdk_license = True
+      - name: Upload RELEASE artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: QRS-Android-Release
+          path: bin/*
+          if-no-files-found: error
