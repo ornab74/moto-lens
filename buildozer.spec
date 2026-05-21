@@ -10,9 +10,11 @@ source.main = main.py
 version = 0.1.5
 android.version_code = 1024005
 
+# ==================== CRITICAL FIXES ====================
 python.version = 3.11
 
-requirements = python3==3.11,kivy==2.2.1,kivymd,httpx,cryptography,aiosqlite,litert-lm
+# Must match hostpython3 exactly
+requirements = python3==3.11,hostpython3==3.11,kivy==2.2.1,kivymd,httpx,cryptography,aiosqlite,litert-lm
 
 orientation = portrait
 fullscreen = 0
@@ -26,7 +28,6 @@ android.api = 35
 android.minapi = 26
 android.ndk_api = 26
 
-# NDK VERSION
 android.ndk = 27c
 android.build_tools_version = 35.0.0
 android.archs = arm64-v8a
