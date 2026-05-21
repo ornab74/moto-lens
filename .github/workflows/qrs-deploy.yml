@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Install system dependencies
         run: |
@@ -36,23 +36,27 @@ jobs:
             libgdbm-dev libnss3-dev libreadline-dev \
             liblzma-dev libjpeg-dev libfreetype6-dev
 
-      - name: Install Android SDK
+      - name: Install Android SDK (cmdline-tools)
         run: |
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT/cmdline-tools"
+
           curl -fsSL -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q tools.zip
           rm tools.zip
+
           mv cmdline-tools latest
-          mkdir -p "$ANDROID_SDK_ROOT/tools/bin"
-          ln -sf "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
+
+          mkdir -p "$ANDROID_SDK_ROOT/platform-tools"
+
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/tools/bin" >> $GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
       - name: Install Android packages
         run: |
-          sdkmanager --version || true
           yes | sdkmanager --licenses || true
+          sdkmanager --update
+
           sdkmanager \
             "platform-tools" \
             "platforms;android-34" \
@@ -63,6 +67,8 @@ jobs:
           python -m pip install --upgrade pip wheel setuptools
           pip install "Cython<3.0"
           pip install buildozer
+
+          # IMPORTANT: kept litert-lm as requested
           pip install kivy==2.2.1 kivymd httpx cryptography aiosqlite litert-lm
 
       - name: Restore signing keystore
@@ -89,10 +95,10 @@ jobs:
           buildozer android debug
           ls -lah bin
 
-      - name: Upload RELEASE AAB
+      - name: Upload RELEASE artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: QRS-Android-AAB
-          path: bin/*.aab
+          name: QRS-Android-Release
+          path: bin/*
           if-no-files-found: error
