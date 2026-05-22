@@ -172,6 +172,7 @@ except Exception:
 try:
     import kivymd
     from kivymd.app import MDApp
+    KivyMDApp = MDApp
     from kivymd.uix.button import MDRaisedButton, MDFlatButton, MDIconButton, MDRoundFlatButton
     from kivymd.uix.dialog import MDDialog
     from kivymd.uix.textfield import MDTextField
@@ -190,83 +191,145 @@ except ImportError:
     HAS_KIVYMD = False
     # Provide minimal safe fallbacks so module can be imported in non-Kivy environments (tests)
     class MDApp(App):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # Minimal `theme_cls` compatibility so code that expects KivyMD still runs.
+            try:
+                from types import SimpleNamespace
+                self.theme_cls = SimpleNamespace(
+                    theme_style="Light",
+                    primary_palette="Blue",
+                    accent_palette="Amber",
+                    primary_hue="500",
+                )
+            except Exception:
+                self.theme_cls = None
+
+    # Expose a common name for the KivyMD-compatible base, even in fallback mode
+    KivyMDApp = MDApp
+
+    # Use actual Kivy widget base classes for fallbacks where available so
+    # fallback widgets support EventDispatcher APIs (like `fbind`).
+    try:
+        from kivy.uix.button import Button as _KivyButton
+        from kivy.uix.label import Label as _KivyLabel
+        from kivy.uix.textinput import TextInput as _KivyTextInput
+        from kivy.uix.boxlayout import BoxLayout as _KivyBoxLayout
+        from kivy.uix.popup import Popup as _KivyPopup
+        from kivy.uix.progressbar import ProgressBar as _KivyProgressBar
+        from kivy.uix.checkbox import CheckBox as _KivyCheckBox
+        from kivy.uix.switch import Switch as _KivySwitch
+    except Exception:
+        class _KivyButton: pass
+        class _KivyLabel: pass
+        class _KivyTextInput: pass
+        class _KivyBoxLayout: pass
+        class _KivyPopup: pass
+        class _KivyProgressBar: pass
+        class _KivyCheckBox: pass
+        class _KivySwitch: pass
+
+    class MDRaisedButton(_KivyButton):
         pass
 
-    class MDRaisedButton:
+    class MDFlatButton(_KivyButton):
         pass
 
-    class MDFlatButton:
+    class MDIconButton(_KivyButton):
         pass
 
-    class MDIconButton:
+    class MDRoundFlatButton(_KivyButton):
         pass
 
-    class MDRoundFlatButton:
+    class MDDialog(_KivyPopup):
         pass
 
-    class MDDialog:
+    class MDTextField(_KivyTextInput):
         pass
 
-    class MDTextField:
-        def __init__(self, **kwargs):
-            self.text = ""
-            self.disabled = False
-
-    class MDLabel:
-        def __init__(self, **kwargs):
-            self.text = kwargs.get('text', '')
-            self.theme_text_color = kwargs.get('theme_text_color', None)
-            self.text_color = kwargs.get('text_color', None)
-
-    class MDCard:
-        def __init__(self, **kwargs):
-            pass
-
-    class MDTopAppBar:
+    class MDLabel(_KivyLabel):
         pass
 
-    class MDBottomNavigation:
+    class MDCard(_KivyBoxLayout):
         pass
 
-    class MDBottomNavigationItem:
+    class MDTopAppBar(_KivyBoxLayout):
         pass
 
-    class MDProgressBar:
+    class MDBottomNavigation(_KivyBoxLayout):
         pass
 
-    class MDCheckbox:
+    class MDBottomNavigationItem(_KivyBoxLayout):
         pass
 
-    class MDSwitch:
-        def __init__(self, **kwargs):
-            self.active = kwargs.get('active', False)
-
-    class MDList:
+    class MDProgressBar(_KivyProgressBar):
         pass
 
-    class OneLineListItem:
+    class MDCheckbox(_KivyCheckBox):
         pass
 
-    class TwoLineListItem:
+    class MDSwitch(_KivySwitch):
         pass
 
-    class ThreeLineAvatarIconListItem:
+    class MDList(_KivyBoxLayout):
         pass
 
-    class LeftIcon:
+    class OneLineListItem(_KivyBoxLayout):
         pass
 
-    class MDDropdownMenu:
+    class TwoLineListItem(_KivyBoxLayout):
         pass
 
-    class MDSnackbar:
-        def __init__(self, text=''):
-            self.text = text
+    class ThreeLineAvatarIconListItem(_KivyBoxLayout):
+        pass
+
+    class LeftIcon(_KivyLabel):
+        pass
+
+    class MDDropdownMenu(_KivyBoxLayout):
+        pass
+
+    class MDSnackbar(_KivyLabel):
         def open(self):
             return None
 
-    class MDBoxLayout:
+    class MDBoxLayout(_KivyBoxLayout):
         pass
+
+# Register common KivyMD widgets with Kivy's Factory so KV strings can resolve them.
+try:
+    from kivy.factory import Factory as _Factory
+    _md_registrations = {
+        'MDRaisedButton': MDRaisedButton,
+        'MDFlatButton': MDFlatButton,
+        'MDIconButton': MDIconButton,
+        'MDRoundFlatButton': MDRoundFlatButton,
+        'MDDialog': MDDialog,
+        'MDTextField': MDTextField,
+        'MDLabel': MDLabel,
+        'MDCard': MDCard,
+        'MDTopAppBar': MDTopAppBar,
+        'MDBottomNavigation': MDBottomNavigation,
+        'MDBottomNavigationItem': MDBottomNavigationItem,
+        'MDProgressBar': MDProgressBar,
+        'MDCheckbox': MDCheckbox,
+        'MDSwitch': MDSwitch,
+        'MDList': MDList,
+        'OneLineListItem': OneLineListItem,
+        'TwoLineListItem': TwoLineListItem,
+        'ThreeLineAvatarIconListItem': ThreeLineAvatarIconListItem,
+        'LeftIcon': LeftIcon,
+        'MDDropdownMenu': MDDropdownMenu,
+        'MDSnackbar': MDSnackbar,
+        'MDBoxLayout': MDBoxLayout,
+    }
+    for _name, _cls in _md_registrations.items():
+        try:
+            _Factory.register(_name, cls=_cls)
+        except Exception:
+            pass
+except Exception:
+    pass
 
 # --- Global Operational Targets & Cryptographic Signatures ---
 MODEL_REPO_ENDPOINT = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/"
@@ -288,6 +351,77 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("HumoidsFoodEngine")
+
+
+def setup_logging_infrastructure(log_file_name: str = "humoids.log") -> None:
+    """Configure additional logging handlers (rotating file) and ensure logs directory exists.
+
+    This is a lightweight, defensive initializer so the runtime can always call
+    `setup_logging_infrastructure()` safely even in minimal test environments.
+    """
+    try:
+        from logging.handlers import RotatingFileHandler
+    except Exception:
+        # RotatingFileHandler not available in constrained environments; keep stream-only logging
+        logger.debug("RotatingFileHandler unavailable; skipping file logging setup.")
+        return
+
+    try:
+        logs_dir = STORAGE_WORKSPACE_DIR / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / log_file_name
+
+        handler = RotatingFileHandler(
+            str(log_path), maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        fmt = logging.Formatter(
+            "%(asctime)s [%(levelname)s] (%(threadName)s) %(message)s"
+        )
+        handler.setFormatter(fmt)
+        handler.setLevel(logging.DEBUG)
+
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        logger.debug("File logging initialized at %s", log_path)
+    except Exception as exc:
+        try:
+            logger.error(f"Failed to initialize file logging handler: {exc}")
+        except Exception:
+            pass
+
+
+def ensure_legacy_font_style_aliases(theme_cls: Any) -> None:
+    """Add legacy KivyMD font-style names as aliases to the current
+    `theme_cls.font_styles` dict so older KV templates (H1..H6, Caption, etc.)
+    keep working with newer KivyMD versions.
+    """
+    try:
+        fs = getattr(theme_cls, "font_styles", None)
+        if not isinstance(fs, dict):
+            return
+
+        alias_map = {
+            "H1": "Display",
+            "H2": "Display",
+            "H3": "Display",
+            "H4": "Headline",
+            "H5": "Headline",
+            "H6": "Title",
+            "Subtitle1": "Title",
+            "Subtitle2": "Title",
+            "Body1": "Body",
+            "Body2": "Body",
+            "Button": "Label",
+            "Caption": "Label",
+            "Overline": "Label",
+        }
+
+        for alias, target in alias_map.items():
+            if alias not in fs and target in fs:
+                fs[alias] = fs[target]
+    except Exception:
+        # Be defensive — do not crash the app for theme adjustments
+        return
 
 # Ensure structural system tracking directories resolve gracefully on non-android systems
 def query_platform_storage_context() -> Path:
@@ -521,6 +655,7 @@ class SecureAsynchronousDatabase:
             # Commit the outer transaction
             if conn.in_transaction:
                 conn.commit()
+            logger.debug(f"DBWorker: executed SQL block (is_script={cmd.is_script}) -> scheduling callback")
         except Exception as exc:
             try:
                 if conn.in_transaction:
@@ -537,18 +672,24 @@ class SecureAsynchronousDatabase:
                     pass
             cmd.event.set()
             if cmd.callback:
-                # Prefer invoking callback synchronously in the worker thread (useful for tests
-                # that do not run the Kivy Clock loop). Also attempt to schedule on the Kivy
-                # Clock if available so UI callbacks still execute on the main thread.
-                try:
-                    cmd.callback(cmd)
-                except Exception as cb_exc:
-                    logger.debug(f"Callback invocation in DB worker thread raised: {cb_exc}")
+                # Prefer scheduling callbacks on the Kivy main thread so UI
+                # mutations do not occur on the DB worker thread. If the
+                # Clock is unavailable (e.g., running tests without Kivy's
+                # main loop), fall back to executing the callback in this
+                # worker thread.
+                scheduled = False
                 try:
                     Clock.schedule_once(lambda dt: cmd.callback(cmd), 0)
+                    scheduled = True
                 except Exception:
-                    # Best-effort: if Clock isn't running, ignore scheduling error
-                    pass
+                    # Clock may not be running in headless/test contexts
+                    logger.debug("Clock scheduling unavailable; executing callback in worker thread.")
+
+                if not scheduled:
+                    try:
+                        cmd.callback(cmd)
+                    except Exception as cb_exc:
+                        logger.debug(f"Callback invocation in DB worker thread raised: {cb_exc}")
 
     def _enqueue_initialization_schema(self) -> None:
         """Generates internal relational tables matching advanced medical/food compliance setups."""
@@ -691,15 +832,19 @@ class SecureDataVault:
                         master_seed = os.urandom(MASTER_KEY_LENGTH_BYTES)
                         dynamic_salt = os.urandom(SALT_LENGTH_BYTES)
 
+                        # Use the identity salt (deterministic from the passphrase)
+                        # so we can reliably derive the same encryption key during
+                        # subsequent verifications.
                         kdf = PBKDF2HMAC(
                             algorithm=hashes.SHA256(),
                             length=MASTER_KEY_LENGTH_BYTES,
-                            salt=dynamic_salt,
+                            salt=identity_salt,
                             iterations=ARGON2_SCRYPT_ITERATIONS,
                         )
                         encryption_key = kdf.derive(passphrase_bytes)
 
-                        # Package verification metadata payload envelope
+                        # Package verification metadata payload envelope (store dynamic_salt for
+                        # potential future uses but do not use it for primary key derivation).
                         header = struct.pack("!4sH", VAULT_FILE_MAGIC, VAULT_FILE_VERSION)
                         payload_raw = header + dynamic_salt + master_seed
 
@@ -2076,7 +2221,7 @@ COMPREHENSIVE_KV_SIGNATURE = """
                 id: vault_pass_input
                 hint_text: "Cryptographic Key Token"
                 password: True
-                mode: "rectangle"
+                mode: "outlined"
                 current_hint_text_color: 0.52, 0.66, 0.57, 1
                 color_mode: "custom"
                 line_color_focus: 0.0, 0.83, 0.41, 1
@@ -2106,7 +2251,7 @@ COMPREHENSIVE_KV_SIGNATURE = """
             size_hint_y: 0.3
 """
 
-class HumoidsFoodEngineApp(MDApp):
+class HumoidsFoodEngineApp(KivyMDApp):
     """
     The ultimate UI execution anchor for the system. Manages application states,
     handles operating system execution suspension, and prevents structural data rot.
@@ -2122,6 +2267,12 @@ class HumoidsFoodEngineApp(MDApp):
         self.theme_cls.theme_style = "Dark"
         self.theme_cls.primary_palette = "Green"
         self.theme_cls.accent_palette = "Amber"
+
+        # Ensure compatibility with older KivyMD font-style names used in KV
+        try:
+            ensure_legacy_font_style_aliases(self.theme_cls)
+        except Exception:
+            pass
         
         # Instantiate system coordinator tracking nodes
         self.coordinator = HumoidsSystemCoordinator()
@@ -2283,8 +2434,79 @@ class UnlockScreen(Screen):
                     logger.error("DashboardScreen class not found; cannot add dashboard screen.")
             
             # Update screen visibility configurations
-            self.manager.transition = SlideTransition(direction="left", duration=0.25)
+            # Use NoTransition here to avoid positional sliding offsets that
+            # can leave the dashboard partially off-screen on some backends.
+            try:
+                self.manager.transition = NoTransition()
+            except Exception:
+                try:
+                    self.manager.transition = SlideTransition(direction="left", duration=0.0)
+                except Exception:
+                    pass
+
+            logger.debug(f"_sync_auth_success_callback: switching manager.current from {self.manager.current} to 'dashboard'")
             self.manager.current = "dashboard"
+            logger.debug(f"_sync_auth_success_callback: manager.current is now {self.manager.current}")
+
+        # Schedule a lightweight heartbeat to verify the main thread and rendering loop
+        def _ui_heartbeat(dt):
+            try:
+                logger.debug("UI heartbeat: main loop alive and processing frames")
+            except Exception:
+                pass
+
+        try:
+            Clock.schedule_interval(_ui_heartbeat, 1.0)
+            logger.debug("_sync_auth_success_callback: scheduled UI heartbeat interval")
+        except Exception as hb_exc:
+            logger.error(f"Failed scheduling UI heartbeat: {hb_exc}")
+
+        # Schedule a one-shot widget tree dump and screenshot to help diagnose
+        # rendering issues (saved to the current working directory).
+        def _dump_ui_hierarchy_and_screenshot(dt):
+            try:
+                logger.debug("_dump_ui_hierarchy_and_screenshot: starting")
+                dashboard = None
+                try:
+                    if self.manager and self.manager.has_screen('dashboard'):
+                        dashboard = self.manager.get_screen('dashboard')
+                except Exception:
+                    dashboard = None
+
+                root_widget = dashboard if dashboard is not None else (self.manager if self.manager is not None else App.get_running_app())
+
+                def walk(w, depth=0):
+                    try:
+                        pos = getattr(w, 'pos', None)
+                        size = getattr(w, 'size', None)
+                        children = len(getattr(w, 'children', [])) if hasattr(w, 'children') else 0
+                        logger.debug(f"WidgetTree:{' ' * depth}{w.__class__.__name__} pos={pos} size={size} children={children}")
+                        for c in list(getattr(w, 'children', [])):
+                            walk(c, depth + 2)
+                    except Exception as inner_exc:
+                        logger.debug(f"WidgetTree walk exception: {inner_exc}")
+
+                walk(root_widget)
+
+                try:
+                    from kivy.core.window import Window
+                    screenshot_fn = os.path.join(os.getcwd(), 'kivy_dashboard_debug.png')
+                    try:
+                        Window.screenshot(screenshot_fn)
+                        logger.info(f"_dump_ui_hierarchy_and_screenshot: wrote screenshot {screenshot_fn}")
+                    except Exception as ss_exc:
+                        logger.error(f"Screenshot failed: {ss_exc}")
+                except Exception as win_exc:
+                    logger.error(f"Failed to take screenshot: {win_exc}")
+
+            except Exception as exc:
+                logger.error(f"_dump_ui_hierarchy_and_screenshot failed: {exc}")
+
+        try:
+            Clock.schedule_once(_dump_ui_hierarchy_and_screenshot, 0.2)
+            logger.debug("_sync_auth_success_callback: scheduled widget tree dump and screenshot")
+        except Exception as dump_exc:
+            logger.error(f"Failed scheduling widget dump: {dump_exc}")
 
     def _sync_auth_failure_callback(self, alert_text: str) -> None:
         """Re-enables user field interaction targets when authentication checks fail."""
@@ -2442,7 +2664,7 @@ LEDGER_TAB_KV_BINDING = """
             MDTextField:
                 id: input_product_name
                 hint_text: "Item Description"
-                mode: "rectangle"
+                mode: "outlined"
                 current_hint_text_color: 0.52, 0.66, 0.57, 1
                 color_mode: "custom"
                 line_color_focus: 0.0, 0.83, 0.41, 1
@@ -2450,7 +2672,7 @@ LEDGER_TAB_KV_BINDING = """
             MDTextField:
                 id: input_caloric_density
                 hint_text: "Energy (kcal)"
-                mode: "rectangle"
+                mode: "outlined"
                 input_filter: "float"
                 current_hint_text_color: 0.52, 0.66, 0.57, 1
                 color_mode: "custom"
@@ -2466,7 +2688,7 @@ LEDGER_TAB_KV_BINDING = """
             MDTextField:
                 id: input_macronutrient_macros
                 hint_text: "Macros (e.g., P:20g, C:40g, F:10g)"
-                mode: "rectangle"
+                mode: "outlined"
                 current_hint_text_color: 0.52, 0.66, 0.57, 1
                 color_mode: "custom"
                 line_color_focus: 0.0, 0.83, 0.41, 1
@@ -2474,7 +2696,7 @@ LEDGER_TAB_KV_BINDING = """
             MDTextField:
                 id: input_allergen_flags
                 hint_text: "Known Allergens / Warning Targets"
-                mode: "rectangle"
+                mode: "outlined"
                 current_hint_text_color: 0.52, 0.66, 0.57, 1
                 color_mode: "custom"
                 line_color_focus: 0.0, 0.83, 0.41, 1
@@ -2672,7 +2894,10 @@ def refresh_ledger_display_cards(self) -> None:
         LIMIT 25;
     """
 
+    logger.debug("refresh_ledger_display_cards: dispatching DB query for latest ledger entries")
+
     def process_render_callback(cmd: Any) -> None:
+        logger.debug("process_render_callback: invoked")
         try:
             # Locate target scroll layout container by traversing the UI hierarchy tree
             # Prefer the explicit navigation item id; fall back to legacy tab id if present
@@ -2724,6 +2949,8 @@ def refresh_ledger_display_cards(self) -> None:
                 
         except Exception as exc:
             logger.error(f"Failed drawing structural elements on UI ledger canvas: {exc}")
+        finally:
+            logger.debug("process_render_callback: completed UI update loop")
 
     # Dispatch non-blocking database evaluation sequence
     app.coordinator.db.execute(query, (), callback=process_render_callback)
@@ -3081,7 +3308,7 @@ CHAT_TAB_KV_BINDING = """
         MDTextField:
             id: user_chat_message_input
             hint_text: "Ask about dietary toxicity parameters..."
-            mode: "rectangle"
+            mode: "outlined"
             current_hint_text_color: 0.52, 0.66, 0.57, 1
             color_mode: "custom"
             line_color_focus: 0.0, 0.83, 0.41, 1
@@ -3601,18 +3828,33 @@ class EngineTabView(MDBoxLayout):
                 app.coordinator.memory.max_turns = int(value)
 
     def assert_local_weights_integrity(self) -> None:
-        """Checks magic signature bytes across local weight arrays."""
+        """Offloads weight file verification to a background thread and
+        schedules a safe UI update on the main thread to avoid blocking."""
         app = App.get_running_app()
-        if not app.coordinator:
+        if not app or not app.coordinator:
             return
 
-        verified = app.coordinator.model_engine.verify_weights_integrity_header()
-        if verified:
-            self.ids.engine_weights_status_label.text = "VERIFIED OK (4-BIT LITERM)"
-            self.ids.engine_weights_status_label.text_color = [0.0, 0.83, 0.41, 1]
-        else:
-            self.ids.engine_weights_status_label.text = "SIGNATURE DAMAGED / EMULATED"
-            self.ids.engine_weights_status_label.text_color = [1.0, 0.33, 0.44, 1]
+        def worker_check():
+            try:
+                verified = app.coordinator.model_engine.verify_weights_integrity_header()
+            except Exception as exc:
+                logger.error(f"Weight integrity check failed: {exc}")
+                verified = False
+
+            def apply_result(dt):
+                try:
+                    if verified:
+                        self.ids.engine_weights_status_label.text = "VERIFIED OK (4-BIT LITERM)"
+                        self.ids.engine_weights_status_label.text_color = [0.0, 0.83, 0.41, 1]
+                    else:
+                        self.ids.engine_weights_status_label.text = "SIGNATURE DAMAGED / EMULATED"
+                        self.ids.engine_weights_status_label.text_color = [1.0, 0.33, 0.44, 1]
+                except Exception as ui_exc:
+                    logger.error(f"Failed applying weight status to UI: {ui_exc}")
+
+            Clock.schedule_once(apply_result, 0)
+
+        threading.Thread(target=worker_check, name="WeightsIntegrityCheck", daemon=True).start()
 
 # ==============================================================================
 # PART 22 OF 40: LAZY TAB INITIALIZATION & CORE ORCHESTRATION LINKS
@@ -3639,22 +3881,39 @@ def _lazy_initialize_sub_tabs(self) -> None:
     nav_ids = getattr(nav_container, 'ids', {})
 
     # 2. Instantiate and drop the modular views into their container components (guarded)
+    disabled_csv = os.environ.get("HUMOIDS_DISABLE_SUBTABS", "").strip()
+    disabled_tabs = {s.strip().lower() for s in disabled_csv.split(',') if s.strip()} if disabled_csv else set()
+    if disabled_tabs:
+        logger.info(f"Sub-tab injection: disabled tabs via HUMOIDS_DISABLE_SUBTABS={disabled_tabs}")
+
     try:
-        if 'navigation_item_ledger' in nav_ids:
+        # Ledger (safe, lightweight)
+        if 'navigation_item_ledger' in nav_ids and 'ledger' not in disabled_tabs:
+            logger.debug("Injecting ledger sub-tab")
             self.ledger_view = LedgerTabView()
             nav_ids['navigation_item_ledger'].add_widget(self.ledger_view)
+            logger.debug("Ledger sub-tab injected")
 
-        if 'navigation_item_scanner' in nav_ids:
+        # Scanner (may initialize vision/model resources)
+        if 'navigation_item_scanner' in nav_ids and 'scanner' not in disabled_tabs:
+            logger.debug("Injecting scanner sub-tab")
             self.scanner_view = ScannerTabView()
             nav_ids['navigation_item_scanner'].add_widget(self.scanner_view)
+            logger.debug("Scanner sub-tab injected")
 
-        if 'navigation_item_chat' in nav_ids:
+        # Chat (may trigger model/tokenizer calls on creation)
+        if 'navigation_item_chat' in nav_ids and 'chat' not in disabled_tabs:
+            logger.debug("Injecting chat sub-tab")
             self.chat_view = ChatTabView()
             nav_ids['navigation_item_chat'].add_widget(self.chat_view)
+            logger.debug("Chat sub-tab injected")
 
-        if 'navigation_item_engine' in nav_ids:
+        # Engine (weights integrity check happens here)
+        if 'navigation_item_engine' in nav_ids and 'engine' not in disabled_tabs:
+            logger.debug("Injecting engine sub-tab")
             self.engine_view = EngineTabView()
             nav_ids['navigation_item_engine'].add_widget(self.engine_view)
+            logger.debug("Engine sub-tab injected")
 
         logger.info("Sub-tab viewport widgets successfully bound to active design nodes.")
     except Exception as exc:
@@ -3670,18 +3929,25 @@ def synchronize_active_viewports(self) -> None:
     whenever the active dashboard workspace view gains foreground focus.
     """
     logger.info("Synchronizing data viewports to active storage tables...")
+    logger.debug("synchronize_active_viewports: beginning detailed sync steps")
     
     # Refresh the food intake ledger item list cards
     if hasattr(self, 'refresh_ledger_display_cards'):
+        logger.debug("synchronize_active_viewports: calling refresh_ledger_display_cards")
         self.refresh_ledger_display_cards()
+        logger.debug("synchronize_active_viewports: returned from refresh_ledger_display_cards")
         
     # Reset the scanner diagnostics canvas layout elements to a stable idle state
     if hasattr(self, 'scanner_view') and self.scanner_view:
+        logger.debug("synchronize_active_viewports: clearing scanner diagnostic frame")
         self.scanner_view.clear_diagnostic_report_frame()
+        logger.debug("synchronize_active_viewports: scanner cleared")
         
     # Read saved variables from disk properties to position sliders accurately
     if hasattr(self, 'engine_view') and self.engine_view:
+        logger.debug("synchronize_active_viewports: populating engine sliders")
         self.engine_view.populate_initial_sliders()
+        logger.debug("synchronize_active_viewports: engine sliders populated")
 
 # Override the placeholder synchronization stub on the main DashboardScreen class
 DashboardScreen.synchronize_active_viewports = synchronize_active_viewports
@@ -3697,6 +3963,16 @@ DashboardScreen.synchronize_active_viewports = synchronize_active_viewports
 if __name__ == "__main__":
     # Ensure system environment paths and logging pipelines are ready
     setup_logging_infrastructure()
+    # If KivyMD is installed, ensure the app class inherits from the real MDApp
+    try:
+        from kivymd.app import MDApp as _MDApp
+        if 'HumoidsFoodEngineApp' in globals() and not issubclass(HumoidsFoodEngineApp, _MDApp):
+            HumoidsFoodEngineApp.__bases__ = (_MDApp,) + tuple(
+                b for b in HumoidsFoodEngineApp.__bases__ if b is not _MDApp
+            )
+            logger.debug("Rebased HumoidsFoodEngineApp to inherit from kivymd.app.MDApp")
+    except Exception as _exc:
+        logger.debug("KivyMD rebasing skipped: %s", _exc)
     
     logger.info("Launching Humoids Food Integrity Verification Node runtime loop...")
     try:
@@ -5777,8 +6053,8 @@ from pathlib import Path
 # In a production environment, these are imported directly from your module packages.
 class UnifiedSubsystemCoordinator:
     def __init__(self, data_dir: Path):
-        self.db = SecureAsynchronousDatabase() if 'SecureAsynchronousDatabase' in globals() else None
-        self.vault = SecureDataVault() if 'SecureDataVault' in globals() else None
+        self.db = SecureAsynchronousDatabase(data_dir / "food_safety_vault.db") if 'SecureAsynchronousDatabase' in globals() else None
+        self.vault = SecureDataVault(data_dir / ".crypto_gate") if 'SecureDataVault' in globals() else None
         self.rules = BiochemicalHazardRulesEngine() if 'BiochemicalHazardRulesEngine' in globals() else None
         self.watchdog = None
         self.cache_manager = None
@@ -5838,6 +6114,40 @@ class HumoidsApplicationEngine(MDApp):
             except Exception as boot_failure:
                 logger.critical(f"Fatal application startup failure: {boot_failure}")
                 self.stop()
+
+        # Ensure the root widget and any screens occupy the full Window dimensions
+        try:
+            from kivy.core.window import Window
+            if self.root:
+                try:
+                    self.root.pos = (0, 0)
+                except Exception:
+                    pass
+                try:
+                    self.root.size = Window.size
+                except Exception:
+                    pass
+
+                # Also enforce sizing for each screen if present
+                try:
+                    screens = getattr(self.root, 'screens', None)
+                    if screens:
+                        for s in screens:
+                            try:
+                                s.pos = (0, 0)
+                                s.size = Window.size
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # Trigger a resize pulse to force canvas re-layout
+            try:
+                Window.dispatch('on_resize', Window.size[0], Window.size[1])
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def on_stop(self):
         """Triggered when the application is closing. Runs clean memory sanitization pipelines."""
