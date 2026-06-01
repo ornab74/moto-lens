@@ -7,8 +7,8 @@ package.domain = com.qroadscan
 source.dir = .
 source.main = main.py
 
-version = 0.1.8
-android.version_code = 1024007
+version = 0.1.9
+android.version_code = 1024833
 
 # ==================== CRITICAL FIXES ====================
 python.version = 3.11
