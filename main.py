@@ -1600,6 +1600,37 @@ class MotoRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_manual_page(self, manual_id: str, page_number: int) -> Dict[str, Any]:
+        row = self.conn.execute(
+            """
+            SELECT page_number, image_path, extracted_text
+            FROM manual_pages WHERE manual_id=? AND page_number=?
+            """,
+            (manual_id, int(page_number)),
+        ).fetchone()
+        if not row:
+            raise KeyError(f"Unknown manual page: {manual_id} p.{page_number}")
+        return dict(row)
+
+    def manual_cache_stats(self, manual_id: str) -> Dict[str, int]:
+        page_row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS pages,
+                   SUM(CASE WHEN image_path != '' THEN 1 ELSE 0 END) AS rendered
+            FROM manual_pages WHERE manual_id=?
+            """,
+            (manual_id,),
+        ).fetchone()
+        chunk_row = self.conn.execute(
+            "SELECT COUNT(*) AS chunks FROM manual_chunks WHERE manual_id=?",
+            (manual_id,),
+        ).fetchone()
+        return {
+            "pages": int(page_row["pages"] or 0),
+            "rendered": int(page_row["rendered"] or 0),
+            "chunks": int(chunk_row["chunks"] or 0),
+        }
+
     def get_manual(self, manual_id: str) -> Dict[str, Any]:
         row = self.conn.execute(
             "SELECT * FROM manuals WHERE manual_id=?", (manual_id,)
@@ -2572,6 +2603,7 @@ if HAS_GUI:
     class MotoTopAppBar(MotoBoxLayout):
         title = StringProperty("")
         specific_text_color = ColorProperty([1, 1, 1, 1])
+        left_action = ObjectProperty(None, allownone=True)
         right_action_items = ListProperty([])
 
         def __init__(self, **kwargs: Any):
@@ -2582,12 +2614,17 @@ if HAS_GUI:
             self.bind(
                 title=self._render,
                 specific_text_color=self._render,
+                left_action=self._render,
                 right_action_items=self._render,
             )
             Clock.schedule_once(self._render, 0)
 
         def _render(self, *args: Any) -> None:
             self.clear_widgets()
+            menu_button = MotoFlatButton(text="MENU", size_hint_x=None, width=dp(70))
+            if self.left_action:
+                menu_button.bind(on_release=self.left_action)
+            self.add_widget(menu_button)
             self.add_widget(
                 MotoLabel(
                     text=self.title,
@@ -2726,6 +2763,69 @@ if HAS_GUI:
             self.page_label.text = label
             if self.image.source != source:
                 self.image.source = source
+
+        def open(self) -> None:
+            self._popup.open()
+
+        def dismiss(self) -> None:
+            self._popup.dismiss()
+
+
+    class MotoNavigationDrawer:
+        """Compact modal drawer for the app's primary destinations."""
+
+        def __init__(self, app: Any):
+            self.app = app
+            content = MotoBoxLayout(
+                orientation="vertical",
+                spacing=dp(6),
+                padding=[dp(16), dp(20), dp(16), dp(14)],
+                md_bg_color=[0.035, 0.048, 0.072, 1],
+            )
+            content.add_widget(
+                MotoLabel(
+                    text="MOTOLENS",
+                    font_style="H5",
+                    bold=True,
+                    adaptive_height=True,
+                    text_color=[0.93, 0.96, 1, 1],
+                )
+            )
+            content.add_widget(
+                MotoLabel(
+                    text="NAVIGATION",
+                    font_style="Caption",
+                    adaptive_height=True,
+                    text_color=[0.56, 0.64, 0.74, 1],
+                )
+            )
+            for label, callback in (
+                ("GARAGE", lambda: app.show_screen("garage")),
+                ("INSPECTION", app.open_inspection),
+                ("RIDE TRACKER", lambda: app.show_screen("ride")),
+                ("SERVICE PLAN", lambda: app.show_screen("service")),
+                ("MANUAL LIBRARY", lambda: app.show_screen("manual")),
+                ("AI MECHANIC", lambda: app.show_screen("mechanic")),
+                ("SECURE SETTINGS", lambda: app.show_screen("settings")),
+                ("PRIVACY", app.show_privacy_info),
+            ):
+                button = MotoFlatButton(text=label)
+                button.bind(on_release=lambda widget, target=callback: self._go(target))
+                content.add_widget(button)
+            content.add_widget(Widget())
+            self._popup = Popup(
+                title="",
+                content=content,
+                size_hint=(0.76, 1),
+                pos_hint={"x": 0, "top": 1},
+                separator_height=0,
+                background="",
+                background_color=[0.025, 0.035, 0.055, 0.96],
+            )
+
+        def _go(self, callback: Callable[[], None]) -> None:
+            self.dismiss()
+            callback()
 
         def open(self) -> None:
             self._popup.open()
@@ -3373,6 +3473,21 @@ if HAS_GUI:
                         text: "CLEAR"
                         text_color: app.colors["red"]
                         on_release: app.clear_secure_settings()
+            SurfaceCard:
+                adaptive_height: True
+                MotoLabel:
+                    text: "Launch behavior"
+                    bold: True
+                    text_color: app.colors["text"]
+                    adaptive_height: True
+                MutedLabel:
+                    text: "Inspection reminders are off by default. Enable them only if you want a fastener reminder when MotoLens opens."
+                    adaptive_height: True
+                MotoRaisedButton:
+                    id: inspection_reminder_toggle
+                    text: "INSPECTION REMINDERS: OFF"
+                    md_bg_color: app.colors["surface_high"]
+                    on_release: app.toggle_launch_inspection_reminders()
 
 <AppShell>:
     orientation: "vertical"
@@ -3382,7 +3497,7 @@ if HAS_GUI:
         elevation: 0
         md_bg_color: app.colors["background"]
         specific_text_color: app.colors["text"]
-        right_action_items: [["PRIVACY", lambda x: app.show_privacy_info()], ["SETTINGS", lambda x: app.show_screen("settings")]]
+        left_action: lambda x: app.open_navigation_drawer()
     ScreenManager:
         id: workspace
         transition: NoTransition()
@@ -3394,49 +3509,6 @@ if HAS_GUI:
         ManualScreen:
         MechanicScreen:
         SettingsScreen:
-    MotoBoxLayout:
-        orientation: "vertical"
-        size_hint_y: None
-        height: dp(98)
-        padding: dp(4), dp(2), dp(4), dp(6)
-        spacing: dp(2)
-        md_bg_color: app.colors["surface"]
-        MotoBoxLayout:
-            size_hint_y: None
-            height: dp(44)
-            spacing: dp(2)
-            MotoFlatButton:
-                text: "GARAGE"
-                text_color: app.colors["text"]
-                on_release: app.show_screen("garage")
-            MotoFlatButton:
-                text: "INSPECT"
-                text_color: app.colors["text"]
-                on_release: app.open_inspection()
-            MotoFlatButton:
-                text: "RIDE"
-                text_color: app.colors["text"]
-                on_release: app.show_screen("ride")
-            MotoFlatButton:
-                text: "SERVICE"
-                text_color: app.colors["text"]
-                on_release: app.show_screen("service")
-        MotoBoxLayout:
-            size_hint_y: None
-            height: dp(44)
-            spacing: dp(2)
-            MotoFlatButton:
-                text: "MANUAL"
-                text_color: app.colors["text"]
-                on_release: app.show_screen("manual")
-            MotoFlatButton:
-                text: "AI MECHANIC"
-                text_color: app.colors["text"]
-                on_release: app.show_screen("mechanic")
-            MotoFlatButton:
-                text: "SETTINGS"
-                text_color: app.colors["accent"]
-                on_release: app.show_screen("settings")
 """
 
     class GarageScreen(Screen):
@@ -3490,6 +3562,8 @@ if HAS_GUI:
             self._manual_processing = False
             self._manual_rendering_pages: set[Tuple[str, int]] = set()
             self._manual_reader_popup: Optional[ManualFocusPopup] = None
+            self._manual_search_processing = False
+            self._navigation_drawer: Optional[MotoNavigationDrawer] = None
             self._mechanic_processing = False
             self.colors = {
                 "background": [0.025, 0.035, 0.055, 1],
@@ -3516,7 +3590,8 @@ if HAS_GUI:
                 self.active_bike_id = bikes[0].bike_id
                 self.active_session_id = self.repository.find_active_inspection(self.active_bike_id)
                 self.show_screen("garage")
-                Clock.schedule_once(lambda dt: self.show_torque_reminder(), 0.4)
+                if self.launch_inspection_reminders_enabled():
+                    Clock.schedule_once(lambda dt: self.show_torque_reminder(), 0.4)
             else:
                 self.show_screen("onboarding")
                 Clock.schedule_once(lambda dt: self.show_how_to(), 0.4)
@@ -3595,6 +3670,26 @@ if HAS_GUI:
         def open_onboarding(self) -> None:
             self.show_screen("onboarding")
 
+        def open_navigation_drawer(self) -> None:
+            if not self._navigation_drawer:
+                self._navigation_drawer = MotoNavigationDrawer(self)
+            self._navigation_drawer.open()
+
+        def launch_inspection_reminders_enabled(self) -> bool:
+            return self.repository.get_setting("launch_inspection_reminders", "0") == "1"
+
+        def toggle_launch_inspection_reminders(self) -> None:
+            enabled = not self.launch_inspection_reminders_enabled()
+            self.repository.set_setting(
+                "launch_inspection_reminders", "1" if enabled else "0"
+            )
+            self.refresh_settings()
+            self.notify(
+                "Launch inspection reminders enabled."
+                if enabled
+                else "Launch inspection reminders disabled."
+            )
+
         def save_secure_settings(self) -> None:
             ids = self.screen("settings").ids
             values = {
@@ -3657,11 +3752,10 @@ if HAS_GUI:
                 self.notify(str(exc))
                 return
             self.active_bike_id = bike.bike_id
-            self.active_session_id = self.repository.start_inspection(bike.bike_id)
+            self.active_session_id = ""
             self.inspection_index = 0
             self.refresh_all()
-            self.show_screen("inspection")
-            self.show_torque_reminder()
+            self.show_screen("garage")
             threading.Thread(
                 target=self._generate_bike_portrait_background,
                 args=(bike,),
@@ -4069,12 +4163,9 @@ if HAS_GUI:
         def _ensure_manual_page_rendered(
             self, manual_id: str, page_number: int, prefetch: bool = False
         ) -> None:
-            pages = self.repository.list_manual_pages(manual_id)
-            page = next(
-                (item for item in pages if item["page_number"] == int(page_number)),
-                None,
-            )
-            if not page:
+            try:
+                page = self.repository.get_manual_page(manual_id, page_number)
+            except KeyError:
                 return
             if page["image_path"] and Path(page["image_path"]).exists():
                 return
@@ -4126,9 +4217,9 @@ if HAS_GUI:
             if manual_id == self.active_manual_id:
                 self.refresh_manual()
             if not prefetch:
-                pages = self.repository.list_manual_pages(manual_id)
+                manual = self.repository.get_manual(manual_id)
                 for neighbor in (page_number - 1, page_number + 1):
-                    if 1 <= neighbor <= len(pages):
+                    if 1 <= neighbor <= int(manual["page_count"]):
                         self._ensure_manual_page_rendered(manual_id, neighbor, True)
 
         def search_manual_cache(self) -> None:
@@ -4141,20 +4232,43 @@ if HAS_GUI:
             if not query:
                 self.notify("Enter a manual search query first.")
                 return
-            hits = self.repository.retrieve_manual_chunks(bike.bike_id, query, 6)
+            if self._manual_search_processing:
+                self.notify("Manual search is already running.")
+                return
+            self._manual_search_processing = True
+            view.ids.manual_cache_stats.text = "Searching indexed manual text..."
+            threading.Thread(
+                target=self._search_manual_cache_background,
+                args=(bike.bike_id, query),
+                daemon=True,
+            ).start()
+
+        def _search_manual_cache_background(self, bike_id: str, query: str) -> None:
+            try:
+                hits = self.repository.retrieve_manual_chunks(bike_id, query, 6)
+                error = ""
+            except Exception as exc:
+                hits = []
+                error = str(exc)
+            Clock.schedule_once(
+                lambda dt: self._search_manual_cache_complete(hits, error),
+                0,
+            )
+
+        def _search_manual_cache_complete(
+            self, hits: Sequence[Dict[str, Any]], error: str
+        ) -> None:
+            self._manual_search_processing = False
+            view = self.screen("manual")
+            if error:
+                self.notify(f"Manual search failed: {sanitize_plain_text(error, 300)}")
+                return
             if not hits:
                 self.notify("No indexed manual text matched that query.")
                 return
             best = hits[0]
             self.active_manual_id = best["manual_id"]
-            pages = self.repository.list_manual_pages(self.active_manual_id)
-            self.manual_page_index = next(
-                (
-                    index for index, page in enumerate(pages)
-                    if page["page_number"] == best["page_number"]
-                ),
-                0,
-            )
+            self.manual_page_index = max(0, int(best["page_number"]) - 1)
             self.reset_manual_zoom()
             view.ids.manual_cache_stats.text = "\n".join(
                 f"p.{hit['page_number']}  |  relevance {hit['score']:.2f}  |  {hit['title']}"
@@ -4338,16 +4452,19 @@ if HAS_GUI:
             manual = next(
                 manual for manual in manuals if manual["manual_id"] == self.active_manual_id
             )
-            pages = self.repository.list_manual_pages(self.active_manual_id)
-            if not pages:
+            page_count = int(manual["page_count"])
+            if not page_count:
                 return
-            self.manual_page_index %= len(pages)
-            page = pages[self.manual_page_index]
+            self.manual_page_index %= page_count
+            page = self.repository.get_manual_page(
+                self.active_manual_id, self.manual_page_index + 1
+            )
             page_label = (
-                f"MANUAL READER  |  PAGE {page['page_number']} OF {len(pages)}"
+                f"MANUAL READER  |  PAGE {page['page_number']} OF {page_count}"
             )
             view.ids.manual_page_label.text = page_label
-            image_path = page["image_path"] if Path(page["image_path"]).exists() else ""
+            saved_path = str(page["image_path"])
+            image_path = saved_path if saved_path and Path(saved_path).exists() else ""
             view.ids.manual_image.source = image_path
             if not image_path:
                 self._ensure_manual_page_rendered(
@@ -4376,20 +4493,10 @@ if HAS_GUI:
                 view.ids.manual_excerpt.opacity = 0
                 view.ids.manual_excerpt.height = 0
             if not view.ids.manual_cache_stats.text or view.ids.manual_cache_stats.text == "No cached manual pages yet.":
-                chunk_count = self.repository.conn.execute(
-                    "SELECT COUNT(*) FROM manual_chunks WHERE manual_id=?",
-                    (self.active_manual_id,),
-                ).fetchone()[0]
-                rendered_count = self.repository.conn.execute(
-                    """
-                    SELECT COUNT(*) FROM manual_pages
-                    WHERE manual_id=? AND image_path != ''
-                    """,
-                    (self.active_manual_id,),
-                ).fetchone()[0]
+                stats = self.repository.manual_cache_stats(self.active_manual_id)
                 view.ids.manual_cache_stats.text = (
-                    f"{len(pages)} indexed pages  |  {chunk_count} searchable chunks  |  "
-                    f"{rendered_count} reader pages rendered on demand"
+                    f"{stats['pages']} indexed pages  |  {stats['chunks']} searchable chunks  |  "
+                    f"{stats['rendered']} reader pages rendered on demand"
                 )
 
         def refresh_mechanic(
@@ -4425,6 +4532,13 @@ if HAS_GUI:
             view.ids.vault_state.text = "UNLOCKED" if self.credentials.is_unlocked else "LOCKED"
             view.ids.entropy_wheel.active = self.credentials.is_unlocked
             view.ids.security_summary.text = self.credentials.protection_summary
+            enabled = self.launch_inspection_reminders_enabled()
+            view.ids.inspection_reminder_toggle.text = (
+                "INSPECTION REMINDERS: ON" if enabled else "INSPECTION REMINDERS: OFF"
+            )
+            view.ids.inspection_reminder_toggle.md_bg_color = (
+                self.colors["accent"] if enabled else self.colors["surface_high"]
+            )
 
 
 else:
@@ -4599,6 +4713,15 @@ class MotoLensTests(unittest.TestCase):
             self.repository.backup_database()
         self.assertEqual(len(list(self.repository.backups_dir.glob("motolens-*.db"))), 5)
 
+    def test_launch_inspection_reminders_are_opt_in(self) -> None:
+        self.assertEqual(
+            self.repository.get_setting("launch_inspection_reminders", "0"), "0"
+        )
+        self.repository.set_setting("launch_inspection_reminders", "1")
+        self.assertEqual(
+            self.repository.get_setting("launch_inspection_reminders", "0"), "1"
+        )
+
     def test_secure_settings_vault_round_trip_and_wrong_passphrase(self) -> None:
         vault = SecureSettingsVault(self.temp_dir)
         if not vault._aesgcm_class:
@@ -4747,3 +4870,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
