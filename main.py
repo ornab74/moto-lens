@@ -79,7 +79,11 @@ ENABLE_UI_ANIMATIONS = os.environ.get(
 ).strip().lower() in {"1", "true", "yes", "on"}
 UI_ANIMATION_FPS = int(os.environ.get("MOTOLENS_UI_ANIMATION_FPS", "6"))
 MAX_MANUAL_RENDER_THREADS = 2
-AI_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("MOTOLENS_AI_TIMEOUT", "180"))
+AI_REQUEST_TIMEOUT_SECONDS = float(os.environ.get("MOTOLENS_AI_TIMEOUT", "45"))
+AI_MECHANIC_FAST_MODE = os.environ.get(
+    "MOTOLENS_AI_MECHANIC_FAST_MODE", "0" if "--test" in sys.argv else "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+AI_MECHANIC_CHUNK_LIMIT = int(os.environ.get("MOTOLENS_AI_MECHANIC_CHUNKS", "3"))
 
 # Kivy reads KCFG_* before graphics initialization. Keep the app from burning a
 # 60 FPS render loop on phones when the UI is mostly static.
@@ -2763,10 +2767,18 @@ class OpenAICoPilot:
             '"recommended_actions":[{"step":"...","kind":"inspect|measure|service|stop"}],'
             '"manual_pages":[1],"professional_service":false}.'
         )
+        tools: List[Dict[str, Any]] = [] if AI_MECHANIC_FAST_MODE else self._web_tools()
+        if AI_MECHANIC_FAST_MODE:
+            active = self._active_text_clients()
+            if not active:
+                raise RuntimeError(self.disabled_reason)
+            label, client, model = active[0]
+            answer = self._run_text_provider(client, model, prompt, tools)
+            return f"MODEL: {label}\nFAST MANUAL-FIRST MODE\n\n{answer}"
         return self._run_text_council(
             prompt,
             "SYNTHESIS TASK: produce one conservative AI Mechanic answer.",
-            self._web_tools(),
+            tools,
         )
 
     def research_maintenance(self, bike: Bike) -> str:
@@ -3028,6 +3040,8 @@ if HAS_GUI:
         md_bg_color = ColorProperty([0, 0, 0, 0])
         radius = ListProperty([0, 0, 0, 0])
         elevation = NumericProperty(0)
+        border_color = ColorProperty([0.18, 0.24, 0.33, 0])
+        border_width = NumericProperty(0)
 
         def __init__(self, **kwargs: Any):
             super().__init__(**kwargs)
@@ -3036,11 +3050,19 @@ if HAS_GUI:
                 self._background_shape = RoundedRectangle(
                     pos=self.pos, size=self.size, radius=self._rounded_radius()
                 )
+            with self.canvas.after:
+                self._border_color_instr = Color(rgba=self.border_color)
+                self._border_shape = Line(
+                    rounded_rectangle=self._rounded_rectangle_points(),
+                    width=self.border_width,
+                )
             self.bind(
                 md_bg_color=self._sync_background,
                 pos=self._sync_background,
                 size=self._sync_background,
                 radius=self._sync_background,
+                border_color=self._sync_background,
+                border_width=self._sync_background,
                 adaptive_height=self._sync_adaptive_height,
             )
             self._sync_adaptive_height()
@@ -3050,11 +3072,19 @@ if HAS_GUI:
             values = (values * 4)[:4]
             return [(float(value), float(value)) for value in values]
 
+        def _rounded_rectangle_points(self) -> Tuple[float, float, float, float, float]:
+            radius_values = list(self.radius) or [0]
+            radius = float(radius_values[0]) if radius_values else 0.0
+            return (self.x, self.y, self.width, self.height, radius)
+
         def _sync_background(self, *args: Any) -> None:
             self._background_color.rgba = self.md_bg_color
             self._background_shape.pos = self.pos
             self._background_shape.size = self.size
             self._background_shape.radius = self._rounded_radius()
+            self._border_color_instr.rgba = self.border_color
+            self._border_shape.rounded_rectangle = self._rounded_rectangle_points()
+            self._border_shape.width = self.border_width
 
         def _sync_adaptive_height(self, *args: Any) -> None:
             if self.adaptive_height:
@@ -3119,6 +3149,8 @@ if HAS_GUI:
         md_bg_color = ColorProperty([0.10, 0.13, 0.18, 1])
         text_color = ColorProperty([0.93, 0.96, 1.0, 1])
         font_style = StringProperty("Button")
+        border_color = ColorProperty([0.16, 0.89, 0.77, 0.45])
+        border_width = NumericProperty(1)
 
         def __init__(self, **kwargs: Any):
             super().__init__(**kwargs)
@@ -3128,13 +3160,30 @@ if HAS_GUI:
             self.height = dp(46)
             self.background_color = self.md_bg_color
             self.color = self.text_color
+            with self.canvas.after:
+                self._border_color_instr = Color(rgba=self.border_color)
+                self._border_shape = Line(
+                    rounded_rectangle=(self.x, self.y, self.width, self.height, dp(10)),
+                    width=self.border_width,
+                )
             self.bind(
                 md_bg_color=self._sync_background_color,
                 text_color=self._sync_text_color,
+                pos=self._sync_button_border,
+                size=self._sync_button_border,
+                border_color=self._sync_button_border,
+                border_width=self._sync_button_border,
             )
 
         def _sync_background_color(self, *args: Any) -> None:
             self.background_color = self.md_bg_color
+
+        def _sync_button_border(self, *args: Any) -> None:
+            self._border_color_instr.rgba = self.border_color
+            self._border_shape.rounded_rectangle = (
+                self.x, self.y, self.width, self.height, dp(10)
+            )
+            self._border_shape.width = self.border_width
 
         def _sync_text_color(self, *args: Any) -> None:
             self.color = self.text_color
@@ -3146,7 +3195,8 @@ if HAS_GUI:
 
     class MotoFlatButton(_MotoButton):
         def __init__(self, **kwargs: Any):
-            kwargs.setdefault("md_bg_color", [0, 0, 0, 0])
+            kwargs.setdefault("md_bg_color", [0.055, 0.072, 0.105, 0.54])
+            kwargs.setdefault("border_color", [0.18, 0.24, 0.33, 0.85])
             super().__init__(**kwargs)
 
 
@@ -3339,9 +3389,29 @@ if HAS_GUI:
             self.hint_text_color = [0.56, 0.64, 0.74, 1]
             self.cursor_color = [0.16, 0.89, 0.77, 1]
             self.padding = [dp(12), dp(12)]
-            self.bind(focus=self._reveal_when_focused)
+            with self.canvas.after:
+                self._border_color_instr = Color(rgba=[0.18, 0.24, 0.33, 0.95])
+                self._border_shape = Line(
+                    rounded_rectangle=(self.x, self.y, self.width, self.height, dp(10)),
+                    width=1,
+                )
+            self.bind(
+                focus=self._reveal_when_focused,
+                pos=self._sync_text_border,
+                size=self._sync_text_border,
+            )
+
+        def _sync_text_border(self, *args: Any) -> None:
+            focused = bool(getattr(self, "focus", False))
+            self._border_color_instr.rgba = [
+                0.16, 0.89, 0.77, 1
+            ] if focused else [0.18, 0.24, 0.33, 0.95]
+            self._border_shape.rounded_rectangle = (
+                self.x, self.y, self.width, self.height, dp(10)
+            )
 
         def _reveal_when_focused(self, instance: Any, focused: bool) -> None:
+            self._sync_text_border()
             if not focused:
                 return
             parent = self.parent
@@ -3544,6 +3614,8 @@ if HAS_GUI:
                 spacing=dp(6),
                 padding=[dp(16), dp(20), dp(16), dp(14)],
                 md_bg_color=[0.035, 0.048, 0.072, 1],
+                border_color=[0.16, 0.89, 0.77, 0.65],
+                border_width=1,
             )
             content.add_widget(
                 MotoLabel(
@@ -3608,6 +3680,8 @@ if HAS_GUI:
     spacing: dp(8)
     radius: [dp(18), dp(18), dp(18), dp(18)]
     md_bg_color: app.colors["surface"]
+    border_color: app.colors["border"]
+    border_width: 1
     elevation: 0
 
 <MutedLabel@MotoLabel>:
@@ -4516,6 +4590,7 @@ if HAS_GUI:
                 "background": [0.025, 0.035, 0.055, 1],
                 "surface": [0.055, 0.072, 0.105, 1],
                 "surface_high": [0.10, 0.13, 0.18, 1],
+                "border": [0.18, 0.24, 0.33, 0.95],
                 "text": [0.93, 0.96, 1.0, 1],
                 "muted": [0.56, 0.64, 0.74, 1],
                 "accent": [0.16, 0.89, 0.77, 1],
@@ -5495,8 +5570,10 @@ if HAS_GUI:
 
         def _mechanic_background(self, bike: Bike, question: str) -> None:
             try:
-                chunks = self.repository.retrieve_manual_chunks(bike.bike_id, question, 5)
-                recent = self.repository.list_chat_messages(bike.bike_id, 12)
+                chunks = self.repository.retrieve_manual_chunks(
+                    bike.bike_id, question, AI_MECHANIC_CHUNK_LIMIT
+                )
+                recent = self.repository.list_chat_messages(bike.bike_id, 8)
                 citations = [
                     {
                         "manual": item["title"],
@@ -6335,3 +6412,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
