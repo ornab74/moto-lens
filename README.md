@@ -6,8 +6,12 @@ implementation lives in `main.py`.
 ## Product flow
 
 - First-launch garage setup asks for motorcycle details, mileage, and notes.
+- Primary navigation lives in a compact top-left menu drawer.
 - A full baseline inspection guides chain, tire, brake, fluid, control, light,
   suspension, and model-specific torque-wrench checks.
+- Launch-time inspection reminders are opt-in from Settings and off by default.
+- Adding a motorcycle returns to Garage; the guided inspection starts only when
+  the rider opens it from the drawer or Garage card.
 - Sensitive notes and GPS routes are encrypted before SQLite storage.
 - Reports create rolling local database backups.
 - GPS trip tracking records personal, DoorDash, and Uber Eats mileage.
@@ -62,6 +66,10 @@ service-interval research, and maintenance brief prompts enable the built-in
 indexes it locally when found, retrieves relevant manual excerpts first, and
 uses online search to fill evidence gaps.
 
+Packaged Android builds use a small standard-library REST adapter for the same
+OpenAI API endpoints. This avoids shipping the desktop SDK's compiled
+dependencies inside the AAB.
+
 Plyer exposes the camera, GPS, and notification hooks. A packaged mobile build
 must still declare native camera, location, and notification permissions.
 
@@ -83,10 +91,31 @@ encryption still requires SQLCipher or a platform storage encryption layer.
 
 Dynamic SQLite values use bound parameters. Text entering storage, prompts,
 logs, and plain UI labels passes through an `nh3`-backed sanitizer with a
-conservative fallback. PDF rendering uses `PyMuPDF`. The AI Mechanic knowledge
+conservative fallback. Desktop PDF rendering uses `PyMuPDF`; packaged Android
+builds use the platform PDF renderer and online evidence fallback. The AI Mechanic knowledge
 surface visualizes real local retrieval score, bounded chat-history compaction,
 and query expansion counts. It is telemetry, not a cryptographic or quantum
 computation claim.
+
+## Android release pipeline
+
+`buildozer.spec` intentionally keeps the existing Play application ID,
+`com.qroadscan.lightcal`, so internal-testing uploads update the installed app.
+The visible application title is now MotoLens.
+
+Pushes to `main` run the headless smoke suite, build a signed AAB, and upload the
+artifact. When the `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` GitHub secret is present,
+the workflow also sends the AAB to the Google Play internal-testing track.
+Signing still uses the existing `ANDROID_KEYSTORE_B64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`
+secrets.
+
+For a USB-connected debug device, Android launch failures are mirrored to
+logcat:
+
+```bash
+adb logcat -s python:D Python:D ActivityManager:I
+```
 
 Motorcycle service specifications vary by model and year. MotoLens intentionally
 does not invent torque values, service intervals, or wear limits. Use the
