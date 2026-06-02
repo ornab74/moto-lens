@@ -49,6 +49,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import types
 import unittest
 from unittest import mock
@@ -66,9 +67,29 @@ APP_NAME = "MotoLens Garage"
 APP_VERSION = "1.0.0"
 OPENAI_REASONING_MODEL = "gpt-5.5"
 OPENAI_IMAGE_MODEL = "gpt-image-2"
-DEFAULT_DATA_DIR = Path(
-    os.environ.get("MOTOLENS_DATA_DIR", "~/.local/share/motolens")
-).expanduser()
+
+
+def resolve_default_data_dir() -> Path:
+    configured = os.environ.get("MOTOLENS_DATA_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if (
+        os.environ.get("ANDROID_ARGUMENT")
+        or os.environ.get("P4A_BOOTSTRAP")
+        or sys.platform == "android"
+    ):
+        try:
+            from android.storage import app_storage_path
+
+            return Path(app_storage_path()) / "motolens"
+        except Exception:
+            private_dir = os.environ.get("ANDROID_PRIVATE", "").strip()
+            if private_dir:
+                return Path(private_dir) / "motolens"
+    return Path("~/.local/share/motolens").expanduser()
+
+
+DEFAULT_DATA_DIR = resolve_default_data_dir()
 # MotoLens owns its command-line flags such as `--test`.
 os.environ.setdefault("KIVY_NO_ARGS", "1")
 
@@ -85,6 +106,24 @@ KNOWLEDGE_VECTOR_DIMENSIONS = 96
 ACTION_BLOCK_PATTERN = re.compile(
     r"\[action\]\s*(\{.*?\})\s*\[/action\]", re.IGNORECASE | re.DOTALL
 )
+
+
+def record_boot_failure(exc: BaseException) -> None:
+    """Keep a private traceback for Android launch failures and mirror it to logcat."""
+
+    report = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    print(f"MotoLens boot failure:\n{report}", file=sys.stderr, flush=True)
+    candidates = [DEFAULT_DATA_DIR]
+    private_dir = os.environ.get("ANDROID_PRIVATE", "").strip()
+    if private_dir:
+        candidates.insert(0, Path(private_dir) / "motolens")
+    for directory in candidates:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "motolens-crash.log").write_text(report, encoding="utf-8")
+            return
+        except OSError:
+            continue
 
 
 def utc_now() -> str:
@@ -1748,6 +1787,69 @@ class MotoRepository:
         return target
 
 
+class AndroidPdfRenderer:
+    """Android framework PDF renderer used when desktop PyMuPDF wheels are unavailable."""
+
+    def __init__(self):
+        if not is_android_runtime():
+            raise RuntimeError("Android PDF rendering is only available in packaged builds.")
+        try:
+            from jnius import autoclass
+
+            self._Bitmap = autoclass("android.graphics.Bitmap")
+            self._BitmapConfig = autoclass("android.graphics.Bitmap$Config")
+            self._CompressFormat = autoclass("android.graphics.Bitmap$CompressFormat")
+            self._File = autoclass("java.io.File")
+            self._FileOutputStream = autoclass("java.io.FileOutputStream")
+            self._ParcelFileDescriptor = autoclass("android.os.ParcelFileDescriptor")
+            self._PdfRenderer = autoclass("android.graphics.pdf.PdfRenderer")
+            self._PdfPage = autoclass("android.graphics.pdf.PdfRenderer$Page")
+        except Exception as exc:
+            raise RuntimeError(
+                f"Android PDF renderer unavailable: {sanitize_plain_text(exc, 240)}"
+            ) from exc
+
+    @contextmanager
+    def open_document(self, pdf_path: Path):
+        descriptor = self._ParcelFileDescriptor.open(
+            self._File(str(pdf_path)),
+            self._ParcelFileDescriptor.MODE_READ_ONLY,
+        )
+        renderer = self._PdfRenderer(descriptor)
+        try:
+            yield renderer
+        finally:
+            renderer.close()
+            descriptor.close()
+
+    def page_count(self, pdf_path: Path) -> int:
+        with self.open_document(pdf_path) as renderer:
+            return int(renderer.getPageCount())
+
+    def render_page(self, pdf_path: Path, page_index: int, target: Path) -> None:
+        with self.open_document(pdf_path) as renderer:
+            page = renderer.openPage(int(page_index))
+            bitmap = None
+            output = None
+            try:
+                bitmap = self._Bitmap.createBitmap(
+                    max(1, int(page.getWidth() * 1.42)),
+                    max(1, int(page.getHeight() * 1.42)),
+                    self._BitmapConfig.ARGB_8888,
+                )
+                bitmap.eraseColor(-1)
+                page.render(bitmap, None, None, self._PdfPage.RENDER_MODE_FOR_DISPLAY)
+                output = self._FileOutputStream(str(target))
+                if not bitmap.compress(self._CompressFormat.JPEG, 86, output):
+                    raise RuntimeError("Android could not encode the rendered PDF page.")
+            finally:
+                if output is not None:
+                    output.close()
+                if bitmap is not None:
+                    bitmap.recycle()
+                page.close()
+
+
 class ManualLibrary:
     """Downloads authorized PDFs, indexes text, and lazily renders viewed pages."""
 
@@ -1814,10 +1916,6 @@ class ManualLibrary:
             raw_header = handle.read(5)
         if raw_header != b"%PDF-":
             raise ValueError("Downloaded file is not a valid PDF manual.")
-        try:
-            import fitz
-        except ImportError as exc:
-            raise RuntimeError("Install PyMuPDF to render and index manual PDFs.") from exc
         digest = hashlib.sha256()
         with Path(pdf_path).open("rb") as handle:
             for block in iter(lambda: handle.read(64 * 1024), b""):
@@ -1828,6 +1926,14 @@ class ManualLibrary:
         saved_pdf = target_dir / "manual.pdf"
         if Path(pdf_path).resolve() != saved_pdf.resolve():
             shutil.move(str(pdf_path), str(saved_pdf))
+        try:
+            import fitz
+        except ImportError as exc:
+            if is_android_runtime():
+                return self._index_android_pdf(
+                    bike_id, saved_pdf, sha256, source_url, title, progress
+                )
+            raise RuntimeError("Install PyMuPDF to render and index manual PDFs.") from exc
         document = fitz.open(str(saved_pdf))
         if document.page_count > 800:
             document.close()
@@ -1865,6 +1971,37 @@ class ManualLibrary:
         self.render_manual_page(manual_id, 1)
         return manual_id
 
+    def _index_android_pdf(
+        self,
+        bike_id: str,
+        saved_pdf: Path,
+        sha256: str,
+        source_url: str,
+        title: str,
+        progress: Optional[Callable[[str], None]],
+    ) -> str:
+        page_count = AndroidPdfRenderer().page_count(saved_pdf)
+        if page_count > 800:
+            raise ValueError("Manual exceeds the 800-page rendering safety limit.")
+        if progress:
+            progress(
+                "Android reader prepared. Text retrieval will use online evidence "
+                "because local PDF text extraction is unavailable in this build."
+            )
+        manual_id = self.repository.save_manual_index(
+            bike_id=bike_id,
+            title=title or f"Service manual {sha256[:8]}",
+            source_url=source_url,
+            pdf_path=str(saved_pdf),
+            sha256=sha256,
+            pages=[
+                {"page_number": number, "image_path": "", "text": ""}
+                for number in range(1, page_count + 1)
+            ],
+        )
+        self.render_manual_page(manual_id, 1)
+        return manual_id
+
     def render_manual_page(self, manual_id: str, page_number: int) -> str:
         manual = self.repository.get_manual(manual_id)
         number = int(page_number)
@@ -1877,6 +2014,12 @@ class ManualLibrary:
         try:
             import fitz
         except ImportError as exc:
+            if is_android_runtime():
+                AndroidPdfRenderer().render_page(
+                    Path(manual["pdf_path"]), number - 1, target
+                )
+                self.repository.update_manual_page_image(manual_id, number, str(target))
+                return str(target)
             raise RuntimeError("Install PyMuPDF to render manual pages.") from exc
         with fitz.open(str(manual["pdf_path"])) as document:
             page = document.load_page(number - 1)
@@ -1884,6 +2027,77 @@ class ManualLibrary:
             pixmap.save(str(target), jpg_quality=86)
         self.repository.update_manual_page_image(manual_id, number, str(target))
         return str(target)
+
+
+class DirectOpenAIClient:
+    """Small Responses and Images API adapter for packaged mobile builds."""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.responses = DirectOpenAIResponses(self)
+        self.images = DirectOpenAIImages(self)
+
+    def post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        request = urllib.request.Request(
+            f"https://api.openai.com/v1/{path.lstrip('/')}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": f"MotoLens/{APP_VERSION}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(
+                f"OpenAI request failed: {sanitize_plain_text(exc, 300)}"
+            ) from exc
+
+
+class DirectOpenAIResponses:
+    def __init__(self, client: DirectOpenAIClient):
+        self.client = client
+
+    def create(self, **kwargs: Any) -> Any:
+        payload = {
+            key: value
+            for key, value in kwargs.items()
+            if key in {"model", "input", "tools"}
+        }
+        response = self.client.post_json("responses", payload)
+        output_text = str(response.get("output_text", ""))
+        if not output_text:
+            parts = []
+            for item in response.get("output", []):
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        parts.append(str(content.get("text", "")))
+            output_text = "\n".join(parts)
+        return types.SimpleNamespace(output_text=output_text)
+
+
+class DirectOpenAIImages:
+    def __init__(self, client: DirectOpenAIClient):
+        self.client = client
+
+    def generate(self, **kwargs: Any) -> Any:
+        payload = {
+            key: value
+            for key, value in kwargs.items()
+            if key in {"model", "prompt", "size", "quality"}
+        }
+        response = self.client.post_json("images/generations", payload)
+        return types.SimpleNamespace(
+            data=[
+                types.SimpleNamespace(
+                    b64_json=str(item.get("b64_json", "")),
+                )
+                for item in response.get("data", [])
+            ]
+        )
 
 
 class OpenAICoPilot:
@@ -1918,9 +2132,9 @@ class OpenAICoPilot:
             from openai import OpenAI
 
             self.client = OpenAI(api_key=api_key)
-            self.disabled_reason = ""
         except ImportError:
-            self.disabled_reason = "Install the openai package to enable OpenAI features."
+            self.client = DirectOpenAIClient(api_key)
+        self.disabled_reason = ""
 
     def _parse_json_object(self, raw_text: str) -> Dict[str, Any]:
         text = raw_text.strip()
@@ -4802,6 +5016,24 @@ class MotoLensTests(unittest.TestCase):
             else:
                 os.environ["ANDROID_ARGUMENT"] = previous
 
+    def test_openai_uses_stdlib_rest_adapter_when_sdk_is_not_packaged(self) -> None:
+        with mock.patch.dict(sys.modules, {"openai": None}):
+            ai = OpenAICoPilot(self.temp_dir)
+            ai.configure({"user_openai_api_key": "sk-mobile-user-key"})
+        self.assertIsInstance(ai.client, DirectOpenAIClient)
+        self.assertEqual(ai.client.api_key, "sk-mobile-user-key")
+
+    def test_android_default_data_dir_prefers_private_app_storage(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"ANDROID_ARGUMENT": "1", "ANDROID_PRIVATE": "/tmp/private-app"},
+            clear=True,
+        ):
+            self.assertEqual(
+                resolve_default_data_dir(),
+                Path("/tmp/private-app/motolens"),
+            )
+
     def test_openai_web_search_tools_and_action_blocks_drive_manual_research(self) -> None:
         calls: List[Dict[str, Any]] = []
 
@@ -4864,10 +5096,13 @@ def main() -> int:
             "Run `python3 main.py --test` for the headless suite or install the GUI dependencies."
         )
         return 0
-    MotoLensApp().run()
+    try:
+        MotoLensApp().run()
+    except BaseException as exc:
+        record_boot_failure(exc)
+        raise
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
