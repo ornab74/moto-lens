@@ -1,10 +1,13 @@
-name: Build Android (Debug / Release)
+name: Build MotoLens Android
 
 on:
   push:
     branches: [ main ]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -30,53 +33,57 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential git zip unzip curl \
+            autoconf automake build-essential ccache cmake curl git libtool pkg-config \
+            zip unzip \
             libssl-dev libffi-dev libsqlite3-dev \
             libbz2-dev zlib1g-dev libncurses5-dev \
             libgdbm-dev libnss3-dev libreadline-dev \
             liblzma-dev libjpeg-dev libfreetype6-dev
 
-      - name: Install Android SDK (cmdline-tools)
+      - name: Install Python tooling and desktop smoke dependencies
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install "Cython<3.0" buildozer
+          python -m pip install -r requirements.txt
+
+      - name: Run MotoLens smoke suite
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -m py_compile main.py
+          python main.py --test
+
+      - name: Install Android SDK command-line tools
         run: |
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT/cmdline-tools"
-
           curl -fsSL -o tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
           unzip -q tools.zip
           rm tools.zip
-
           mv cmdline-tools latest
-
           mkdir -p "$ANDROID_SDK_ROOT/platform-tools"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-
-      # ✅ FIX: Buildozer expects legacy sdkmanager path
-      - name: Fix sdkmanager path for Buildozer
+      - name: Add legacy sdkmanager path for Buildozer
         run: |
-          mkdir -p /usr/local/lib/android/sdk/tools/bin
-          ln -sf /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager \
-            /usr/local/lib/android/sdk/tools/bin/sdkmanager
+          mkdir -p "$ANDROID_SDK_ROOT/tools/bin"
+          ln -sf "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "$ANDROID_SDK_ROOT/tools/bin/sdkmanager"
 
-      - name: Install Android packages
+      - name: Install Android API 35 packages
         run: |
           yes | sdkmanager --licenses || true
-          sdkmanager --update
-
           sdkmanager \
             "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Install Buildozer & Python deps
-        run: |
-          python -m pip install --upgrade pip wheel setuptools
-          pip install "Cython<3.0"
-          pip install buildozer
-
-          # kept litert-lm exactly as requested
-          pip install kivy==2.2.1 kivymd httpx cryptography aiosqlite litert-lm
+      - name: Cache python-for-android build
+        uses: actions/cache@v4
+        with:
+          path: .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
 
       - name: Restore signing keystore
         if: github.event_name != 'pull_request'
@@ -85,7 +92,7 @@ jobs:
           echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > qrs-upload.jks
           chmod 600 qrs-upload.jks
 
-      - name: Build signed RELEASE (AAB)
+      - name: Build signed release AAB
         if: github.event_name != 'pull_request'
         env:
           P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/qrs-upload.jks
@@ -99,13 +106,35 @@ jobs:
       - name: Build debug APK
         if: github.event_name == 'pull_request'
         run: |
-          buildozer android debug
+          buildozer -v android debug
           ls -lah bin
 
-      - name: Upload RELEASE artifact
-        if: github.event_name != 'pull_request'
+      - name: Upload Android artifact
         uses: actions/upload-artifact@v4
         with:
-          name: QRS-Android-Release
+          name: MotoLens-Android-${{ github.event_name == 'pull_request' && 'Debug' || 'Release' }}
           path: bin/*
           if-no-files-found: error
+
+      - name: Detect Google Play credentials
+        id: play
+        if: github.event_name != 'pull_request'
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload AAB to Google Play internal testing
+        if: steps.play.outputs.configured == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.qroadscan.lightcal
+          releaseFiles: bin/*.aab
+          track: internal
+          status: completed
+
