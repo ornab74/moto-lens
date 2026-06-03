@@ -2816,8 +2816,8 @@ class OpenAICoPilot:
                 'motorcycle proportions","single complete motorcycle","no text","no watermark",'
                 '"no logo invention","no extra wheels","landscape composition"]}}[/action]'
             ),
-            size="1536x1024",
-            quality="high",
+            size="750x600",
+            quality="low",
         )
         encoded = response.data[0].b64_json
         target = self.images_dir / f"bike-{bike.bike_id}.png"
